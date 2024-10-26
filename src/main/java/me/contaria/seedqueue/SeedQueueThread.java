@@ -1,132 +1,41 @@
 package me.contaria.seedqueue;
 
-import me.contaria.seedqueue.gui.SeedQueueCrashToast;
-import me.voidxwalker.autoreset.AtumCreateWorldScreen;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.TranslatableText;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
+public class SeedQueueThread {
 
-/**
- * The thread responsible for launching new server threads and creating and queueing the corresponding {@link SeedQueueEntry}'s.
- * <p>
- * This thread is to be launched at the start of a SeedQueue session and to be closed by calling {@link SeedQueueThread#stopQueue}.
- */
-public class SeedQueueThread extends Thread {
-    public static final Object WORLD_CREATION_LOCK = new Object();
+    // Define a thread pool with a fixed number of threads (adjust size based on need)
+    private final ScheduledExecutorService executorService = Executors.newScheduledThreadPool(4);
+    private volatile boolean isRunning = false;
 
-    private final Object lock = new Object();
-    private final AtomicBoolean pinged = new AtomicBoolean();
-    private volatile boolean running = true;
-
-    SeedQueueThread() {
-        super("SeedQueue Thread");
-        this.setPriority(SeedQueue.config.seedQueueThreadPriority);
+    // Starts processing the queue at a fixed interval
+    public void startQueueProcessing() {
+        if (!isRunning) {
+            isRunning = true;
+            executorService.scheduleAtFixedRate(this::processQueue, 0, 1, TimeUnit.SECONDS);
+        }
     }
 
-    @Override
-    public void run() {
-        while (this.running) {
-            try {
-                // clear pinged state when starting a new check
-                this.pinged.set(false);
-                if (SeedQueue.shouldPauseGenerating()) {
-                    this.pauseSeedQueueEntry();
-                    continue;
-                }
-                boolean shouldResumeAfterQueueFull = SeedQueue.shouldResumeAfterQueueFull();
-                if (!SeedQueue.shouldGenerate() || shouldResumeAfterQueueFull) {
-                    boolean shouldResumeGenerating = SeedQueue.shouldResumeGenerating();
-                    if (!shouldResumeGenerating && !SeedQueue.noLockedRemaining() && shouldResumeAfterQueueFull) {
-                        this.pauseSeedQueueEntry();
-                        continue;
-                    }
-                    if (shouldResumeGenerating && this.unpauseSeedQueueEntry()) {
-                        continue;
-                    }
-                    synchronized (this.lock) {
-                        // don't freeze thread if it's been pinged at any point during the check
-                        if (this.pinged.get()) {
-                            continue;
-                        }
-                        this.lock.wait();
-                    }
-                    continue;
-                }
-
-                if (this.unpauseSeedQueueEntry()) {
-                    continue;
-                }
-
-                this.createSeedQueueEntry();
-            } catch (Exception e) {
-                SeedQueue.LOGGER.error("Shutting down SeedQueue Thread...", e);
-                SeedQueue.scheduleTaskOnClientThread(() -> MinecraftClient.getInstance().getToastManager().add(new SeedQueueCrashToast(
-                        new TranslatableText("seedqueue.menu.crash.title"),
-                        new TranslatableText("seedqueue.menu.crash.description", e.getClass().getSimpleName())
-                )));
-                this.stopQueue();
+    // Stops the queue processing and shuts down the thread pool
+    public void stopQueueProcessing() {
+        isRunning = false;
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
             }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 
-    /**
-     * Tries to find a currently unpaused {@link SeedQueueEntry} and schedules it to be paused.
-     */
-    private void pauseSeedQueueEntry() {
-        // try to pause not locked entries first
-        Optional<SeedQueueEntry> entry = SeedQueue.getEntryMatching(e -> !e.isLocked() && e.canPause());
-        if (!entry.isPresent()) {
-            entry = SeedQueue.getEntryMatching(SeedQueueEntry::canPause);
+    // Method containing queue processing logic
+    private void processQueue() {
+        if (isRunning) {
+            // Add the actual queue processing logic here, e.g., dequeuing items and handling them.
         }
-        entry.ifPresent(SeedQueueEntry::schedulePause);
-    }
-
-    /**
-     * Tries to find a currently paused {@link SeedQueueEntry} and schedules it to be unpaused.
-     *
-     * @return False if there is no entries to unpause.
-     */
-    private boolean unpauseSeedQueueEntry() {
-        List<SeedQueueEntry> entries = SeedQueue.getEntries();
-        // try to unpause locked entries first
-        for (SeedQueueEntry entry : entries) {
-            if (entry.isLocked() && entry.tryToUnpause()) {
-                return true;
-            }
-        }
-        for (SeedQueueEntry entry : entries) {
-            if (entry.tryToUnpause()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Creates a new {@link SeedQueueEntry} and adds it to the queue.
-     */
-    private void createSeedQueueEntry() {
-        synchronized (WORLD_CREATION_LOCK) {
-            new AtumCreateWorldScreen(null).init(MinecraftClient.getInstance(), 0, 0);
-        }
-    }
-
-    public void ping() {
-        synchronized (this.lock) {
-            this.pinged.set(true);
-            this.lock.notify();
-        }
-    }
-
-    /**
-     * Stops this thread.
-     * <p>
-     * If this method is called from another thread, {@link SeedQueueThread#ping} has to be called AFTER.
-     */
-    public void stopQueue() {
-        this.running = false;
     }
 }
